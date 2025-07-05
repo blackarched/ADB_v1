@@ -102,6 +102,29 @@ body {
   text-shadow: 0 0 4px var(--cyber-cyan), 0 0 8px var(--cyber-cyan);
 }
 
+.neon-text { /* Generic neon text, combine with text-color utilities */
+  text-shadow: 0 0 3px currentColor, 0 0 5px currentColor, 0 0 8px currentColor;
+}
+
+.cyber-border { /* Simple border for elements that are not full cards */
+  border: 1px solid var(--border-color);
+}
+
+.hud-corner {
+  position: absolute;
+  width: 20px; /* Example size */
+  height: 20px; /* Example size */
+  border-color: var(--cyber-cyan); /* Example color */
+  /* Ensure border-style (solid) and border-width (2px) are applied by Tailwind classes directly on the element */
+  opacity: 0.7; /* Example opacity */
+}
+
+.hud-line {
+  position: absolute;
+  background-color: var(--cyber-cyan); /* Example color */
+  opacity: 0.3; /* Example opacity */
+}
+
 .status-indicator {
   width: 10px;
   height: 10px;
@@ -117,9 +140,20 @@ body {
   animation: pulse-green 1.5s ease-in-out infinite alternate;
 }
 
+.status-vulnerable {
+  background: var(--cyber-red); /* Or var(--cyber-yellow) depending on desired effect */
+  box-shadow: 0 0 10px var(--cyber-red);
+  animation: pulse-red 1.5s ease-in-out infinite alternate; /* Optional: add a pulse for vulnerable items */
+}
+
 .status-disconnected {
   background: var(--cyber-red);
   box-shadow: 0 0 10px var(--cyber-red);
+}
+
+@keyframes pulse-red { /* Optional: for vulnerable status */
+  from { opacity: 1; transform: scale(1); box-shadow: 0 0 8px var(--cyber-red); }
+  to { opacity: 0.7; transform: scale(1.1); box-shadow: 0 0 15px var(--cyber-red); }
 }
 
 @keyframes pulse-green {
