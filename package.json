@@ -27,6 +27,7 @@
     "react-dom": "^18.2.0",
     "react-helmet": "^6.1.0",
     "recharts": "^2.10.3",
+    "socket.io-client": "^4.8.1",
     "tailwind-merge": "^1.14.0",
     "tailwindcss-animate": "^1.0.7",
     "webadb": "^1.0.1"

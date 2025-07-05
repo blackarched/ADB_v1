@@ -1,19 +1,12 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-// import { Adb, AdbDaemonDevice } from 'webadb'; // Will be replaced by backend calls
+import { useState, useEffect, useCallback } from 'react';
 import { useToast } from '@/components/ui/use-toast';
+import { useSocket } from '@/contexts/SocketContext'; // Import useSocket
 
-// TODO: Replace with actual Socket.IO client from context
-const mockSocket = {
-  on: (event, handler) => console.log(`Mock socket: subscribed to ${event}`),
-  emit: (event, data) => console.log(`Mock socket: emitted ${event}`, data),
-  off: (event) => console.log(`Mock socket: unsubscribed from ${event}`),
-};
-
-
-export function useAdb(socket = mockSocket) { // socket will be passed via context later
+export function useAdb() {
+  const { socket, isConnected: isSocketConnected } = useSocket(); // Consume socket from context
   const { toast } = useToast();
   const [devices, setDevices] = useState([]); // List of available devices
-  const [selectedDevice, setSelectedDevice] = useState(null); // The currently selected AdbDaemonDevice-like object from backend
+  const [selectedDevice, setSelectedDevice] = useState(null);
   const [deviceInfo, setDeviceInfo] = useState(null); // Info for the selectedDevice
   const [log, setLog] = useState(['NEXUS-ADB v1.1 Initialized... Waiting for backend connection.']);
   const [isMirroring, setIsMirroring] = useState(false);
@@ -70,8 +63,12 @@ export function useAdb(socket = mockSocket) { // socket will be passed via conte
     // For now, we assume 'getDeviceInfo' will fetch for the 'selectedDevice.serial'
     if (deviceToConnect.serial) {
        await getDeviceInfo(deviceToConnect.serial);
+       if (socket && isSocketConnected) {
+         addLogEntry(`Requesting logcat for ${deviceToConnect.serial}...`, 'WS');
+         socket.emit('subscribe:adb:logcat', { deviceId: deviceToConnect.serial, filter: '' }); // Empty filter for all logs initially
+       }
     }
-  }, [devices, addLogEntry, toast, fetchDevices]);
+  }, [devices, addLogEntry, toast, fetchDevices, socket, isSocketConnected, getDeviceInfo]); // Added getDeviceInfo to dependencies
 
 
   const getDeviceInfo = useCallback(async (serial) => {
@@ -112,23 +109,35 @@ export function useAdb(socket = mockSocket) { // socket will be passed via conte
   // Screen mirroring will be handled by WebSocket
   const startMirroring = useCallback(async () => {
     if (!selectedDevice || isMirroring) return;
-    addLogEntry(`Requesting screen mirror for ${selectedDevice.serial}...`, 'WS');
-    // socket.emit('adb:start_mirror', { deviceId: selectedDevice.serial });
-    // setIsMirroring(true); // Should be set upon confirmation from WebSocket
-    // For now, simulate:
-    addLogEntry('Screen mirror started (simulated). Waiting for frames...', 'SYSTEM');
-    setIsMirroring(true);
-    setMirrorUrl('https://via.placeholder.com/360x640.png?text=Mirroring...'); // Placeholder
-  }, [selectedDevice, isMirroring, addLogEntry]);
+    if (!socket || !isSocketConnected) {
+      addLogEntry('Socket not connected. Cannot start mirroring.', 'ERROR');
+      toast({ title: 'Mirroring Error', description: 'Socket not connected.', variant: 'destructive' });
+      return;
+    }
+    addLogEntry(`Requesting screen mirror for ${selectedDevice.serial}...`, 'WS_EMIT');
+    socket.emit('adb:start_mirror', { deviceId: selectedDevice.serial });
+    // UI state will be updated based on backend confirmation or frames received via 'adb:mirror_frame'
+    // For immediate feedback, we can set isMirroring, but it's better if backend confirms.
+    // For now, let's assume backend will send frames if successful.
+    setIsMirroring(true); // Optimistic update, or wait for backend ack
+    addLogEntry('Screen mirror request sent. Waiting for frames...', 'SYSTEM');
+  }, [selectedDevice, isMirroring, addLogEntry, socket, isSocketConnected, toast]);
 
   const stopMirroring = useCallback(() => {
     if (!isMirroring || !selectedDevice) return;
-    addLogEntry(`Stopping screen mirror for ${selectedDevice.serial}...`, 'WS');
-    // socket.emit('adb:stop_mirror', { deviceId: selectedDevice.serial });
-    setIsMirroring(false);
+    if (!socket || !isSocketConnected) {
+      addLogEntry('Socket not connected. Cannot stop mirroring.', 'ERROR');
+      // No toast here as it might be called during cleanup
+      setIsMirroring(false); // Still update UI
+      setMirrorUrl('');
+      return;
+    }
+    addLogEntry(`Stopping screen mirror for ${selectedDevice.serial}...`, 'WS_EMIT');
+    socket.emit('adb:stop_mirror', { deviceId: selectedDevice.serial });
+    setIsMirroring(false); // Assume stop is successful or handle confirmation
     setMirrorUrl('');
-    addLogEntry('Screen mirror stopped.');
-  }, [isMirroring, selectedDevice, addLogEntry]);
+    addLogEntry('Screen mirror stop request sent.');
+  }, [isMirroring, selectedDevice, addLogEntry, socket, isSocketConnected]);
 
   const takeScreenshot = useCallback(async () => {
     if (!selectedDevice) {
@@ -276,33 +285,77 @@ export function useAdb(socket = mockSocket) { // socket will be passed via conte
     }
   };
 
-  // Initial fetch of devices
+  // Initial fetch of devices and general socket status logging
   useEffect(() => {
-    fetchDevices();
-  }, [fetchDevices]);
+    if (isSocketConnected) {
+      addLogEntry('Socket connected to backend.', 'SYSTEM_GREEN');
+      fetchDevices();
+    } else {
+      addLogEntry('Socket disconnected. Waiting to connect...', 'SYSTEM_RED');
+      // Clear device related data if socket disconnects
+      setDevices([]);
+      setSelectedDevice(null);
+      setDeviceInfo(null);
+      setIsMirroring(false);
+      setMirrorUrl('');
+    }
+  }, [isSocketConnected, fetchDevices, addLogEntry]);
 
-  // WebSocket listeners (placeholder)
+  // WebSocket listeners for ADB specific events
   useEffect(() => {
-    // socket.on('adb:logcat', (logLine) => {
-    //   addLogEntry(logLine.line, `LOGCAT-${logLine.deviceId}`);
-    // });
-    // socket.on('adb:mirror_frame', ({ deviceId, frame }) => {
-    //   if (selectedDevice?.serial === deviceId && isMirroring) {
-    //     setMirrorUrl(frame); // Assuming frame is a data URL
-    //   }
-    // });
-    // socket.on('adb:device_update', () => { // Backend could push this if devices change
-    //   fetchDevices();
-    // });
+    if (!socket || !isSocketConnected) {
+      // Clear listeners if socket is not available or not connected
+      // This might be redundant if SocketProvider handles listener cleanup on disconnect,
+      // but explicit cleanup here ensures hook-specific listeners are removed.
+      return () => {};
+    }
 
-    // return () => {
-    //   socket.off('adb:logcat');
-    //   socket.off('adb:mirror_frame');
-    //   socket.off('adb:device_update');
-    // };
-  }, [socket, addLogEntry, selectedDevice, isMirroring, fetchDevices]);
+    const handleLogcat = (logLine) => {
+      if (logLine.deviceId === selectedDevice?.serial) { // Only process logs for the selected device
+        addLogEntry(logLine.line, `LOGCAT`);
+      }
+    };
+    const handleMirrorFrame = ({ deviceId, frame }) => {
+      if (selectedDevice?.serial === deviceId && isMirroring) {
+        setMirrorUrl(frame); // Assuming frame is a data URL (e.g., 'data:image/jpeg;base64,...')
+      }
+    };
+    const handleDeviceUpdate = () => { // Backend could push this if devices change significantly
+      addLogEntry('Device list updated by backend.', 'SYSTEM');
+      fetchDevices();
+    };
+     const handleLogcatError = ({ deviceId, error }) => {
+      if (selectedDevice?.serial === deviceId) {
+        addLogEntry(`Logcat stream error: ${error}`, 'ERROR');
+        toast({ title: 'Logcat Error', description: error, variant: 'destructive' });
+      }
+    };
+    const handleLogcatClosed = ({ deviceId }) => {
+      if (selectedDevice?.serial === deviceId) {
+        addLogEntry('Logcat stream closed by backend.', 'SYSTEM');
+      }
+    };
 
-  // Update device info periodically if a device is selected
+
+    socket.on('adb:logcat', handleLogcat);
+    socket.on('adb:mirror_frame', handleMirrorFrame);
+    socket.on('adb:device_update', handleDeviceUpdate); // Example: if backend pushes device list changes
+    socket.on('adb:logcat:error', handleLogcatError);
+    socket.on('adb:logcat:closed', handleLogcatClosed);
+
+    // Logcat subscription logic is now part of connectDevice or a dedicated function
+    // For mirroring, startMirroring will emit the request
+
+    return () => {
+      socket.off('adb:logcat', handleLogcat);
+      socket.off('adb:mirror_frame', handleMirrorFrame);
+      socket.off('adb:device_update', handleDeviceUpdate);
+      socket.off('adb:logcat:error', handleLogcatError);
+      socket.off('adb:logcat:closed', handleLogcatClosed);
+    };
+  }, [socket, isSocketConnected, addLogEntry, selectedDevice, isMirroring, fetchDevices, toast]);
+
+  // Update device info periodically if a device is selected and socket is connected
   useEffect(() => {
     let intervalId;
     if (selectedDevice?.serial) {
