@@ -46,6 +46,12 @@ app.get('/', (req, res) => {
   res.send('ADB Pentest Dashboard Backend Running!');
 });
 
+// Health check endpoint for K8s probes
+app.get('/healthz', (req, res) => {
+  // TODO: Add more sophisticated health checks if needed (e.g., DB connection, ADB server status)
+  res.status(200).send('OK');
+});
+
 // Metrics endpoint
 app.get('/metrics', metricsEndpoint);
 

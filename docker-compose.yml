@@ -1,0 +1,102 @@
+version: '3.8'
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "80:80" # Host:Container - Exposes Nginx on port 80
+      # - "443:443" # Uncomment if you set up SSL directly in Nginx container
+    depends_on:
+      - backend
+    networks:
+      - adb_dash_net
+    restart: unless-stopped
+    # Environment variables for Vite build can be passed here if needed,
+    # but it's generally better to have Nginx handle proxying based on location.
+    # environment:
+    #   - VITE_API_BASE_URL=/api # This would be used if frontend makes absolute URLs
+    #   - VITE_BACKEND_WS_URL=ws://localhost/socket.io # If accessing directly via host, adjust Nginx for this
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001" # Host:Container - Exposes backend on port 3001
+    environment:
+      # These will be picked up by dotenv in server.js if .env file is not mounted/present
+      - NODE_ENV=production
+      - ADB_HOST=${ADB_HOST:-host.docker.internal} # For ADB server running on Docker host (mac/win)
+                                                 # For Linux, use `extra_hosts` or network_mode: host for ADB server access.
+                                                 # Or, run ADB server in its own container.
+      - ADB_PORT=${ADB_PORT:-5037}
+      # - ADB_KEYFILE_PATH=/path/in/container/to/adbkey # If mounting keys
+      - PENTEST_SCRIPT_PATH=/usr/bin/ # Matches Dockerfile
+      - API_RATE_LIMIT_MAX_REQUESTS=${API_RATE_LIMIT_MAX_REQUESTS:-100}
+      - API_RATE_LIMIT_WINDOW_MS=${API_RATE_LIMIT_WINDOW_MS:-60000}
+      - BACKEND_PORT=3001
+      # For ADB on Linux host:
+      # Add `extra_hosts: ["host.docker.internal:host-gateway"]` if your Docker version supports it.
+      # Or, if ADB server is on the host, you might need to use the host's IP or specific Docker network settings.
+      # For simplicity, this setup assumes ADB server is accessible.
+      # A common pattern is to run adb server on the host and expose its port,
+      # or run adb server in another container on the same Docker network.
+    volumes:
+      - backend_logs:/app/logs # Example for persistent logs if app writes to /app/logs
+      # To use a local .env file for backend development (override environment vars above):
+      # - ./.env:/app/.env:ro
+      # If you need to mount ADB keys:
+      # - ~/.android/adbkey:/root/.android/adbkey:ro # Mounts host adbkey to where adb client in container might look
+      # - ~/.android/adbkey.pub:/root/.android/adbkey.pub:ro
+    networks:
+      - adb_dash_net
+    restart: unless-stopped
+    # cap_add and devices are for running an ADB server *inside* this container, which is complex.
+    # It's generally easier to connect to an ADB server running on the host or another container.
+    # If you absolutely need to run adb server inside this container and interact with host USB:
+    # cap_add:
+    #   - SYS_ADMIN
+    # devices:
+    #   - "/dev/bus/usb:/dev/bus/usb"
+    # privileged: true # Use with extreme caution
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379" # Optional: Expose Redis to host for debugging
+    volumes:
+      - redis_data:/data
+    networks:
+      - adb_dash_net
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass "${REDIS_PASSWORD:-yoursecurepassword}" # Set a password!
+
+  prometheus:
+    image: prom/prometheus:v2.47.0 # Use a specific version
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # - prometheus_data:/prometheus # Persistent data for Prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle' # Allows reloading config via HTTP POST to /-/reload
+    networks:
+      - adb_dash_net
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+volumes:
+  backend_logs:
+  redis_data:
+  # prometheus_data: # Uncomment if you want persistent Prometheus data
+
+networks:
+  adb_dash_net:
+    driver: bridge

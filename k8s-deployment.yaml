@@ -1,0 +1,248 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: adb-dash-config
+  namespace: adb-dash-ns # Assuming a dedicated namespace
+data:
+  NODE_ENV: "production"
+  ADB_HOST: "your-adb-host-address" # Needs to be accessible from K8s pods, or use a sidecar/internal ADB server
+  ADB_PORT: "5037"
+  PENTEST_SCRIPT_PATH: "/usr/bin/"
+  API_RATE_LIMIT_MAX_REQUESTS: "200" # Example, adjust as needed
+  API_RATE_LIMIT_WINDOW_MS: "60000"
+  BACKEND_PORT: "3001"
+  # VITE_API_BASE_URL: "/api" # For frontend, if it needs to be configured at runtime (usually built-in)
+  # VITE_BACKEND_WS_URL: "ws://your-ingress-or-service-dns/socket.io" # For frontend
+  REDIS_HOST: "adb-dash-redis-service" # K8s service name for Redis
+  REDIS_PORT: "6379"
+  # REDIS_PASSWORD: "your-redis-password" # Should be stored as a Secret, not in ConfigMap
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: adb-dash-secrets
+  namespace: adb-dash-ns
+type: Opaque
+data:
+  # Passwords should be base64 encoded: echo -n "yourpassword" | base64
+  REDIS_PASSWORD: "eW91cnNlY3VyZXBhc3N3b3Jk" # Example: base64 encoded "yoursecurepassword"
+  # ADB_KEYFILE_CONTENT_BASE64: "your_base64_encoded_adb_keyfile_content" # If using key content directly
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: adb-dash-backend-service
+  namespace: adb-dash-ns
+spec:
+  selector:
+    app: adb-dash-backend
+  ports:
+    - protocol: TCP
+      port: 3001 # Port the service will be available on within the cluster
+      targetPort: 3001 # Port the container is listening on
+  type: ClusterIP # Or NodePort/LoadBalancer if external access needed directly (usually via Ingress)
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: adb-dash-backend-deployment
+  namespace: adb-dash-ns
+  labels:
+    app: adb-dash-backend
+spec:
+  replicas: 1 # Adjust as needed
+  selector:
+    matchLabels:
+      app: adb-dash-backend
+  template:
+    metadata:
+      labels:
+        app: adb-dash-backend
+    spec:
+      containers:
+        - name: backend
+          image: your-dockerhub-username/adb-dash-backend:latest # Replace with your actual image path
+          imagePullPolicy: Always # Or IfNotPresent
+          ports:
+            - containerPort: 3001
+          envFrom:
+            - configMapRef:
+                name: adb-dash-config
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: adb-dash-secrets
+                  key: REDIS_PASSWORD
+            # Example if mounting ADB key from a secret volume:
+            # - name: ADB_KEYFILE_PATH
+            #   value: "/etc/adb/adbkey"
+          livenessProbe:
+            httpGet:
+              path: /healthz # Needs to be implemented in backend/server.js
+              port: 3001
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 3001
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          # Volume mount for ADB key if stored in a secret:
+          # volumeMounts:
+          #   - name: adb-key-volume
+          #     mountPath: "/etc/adb"
+          #     readOnly: true
+      # volumes:
+      #   - name: adb-key-volume
+      #     secret:
+      #       secretName: adb-dash-secrets # Assuming adb key is part of this secret or a separate one
+      #       items:
+      #         - key: ADB_KEYFILE_CONTENT_BASE64 # Key in secret data
+      #           path: adbkey # Filename in /etc/adb/
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: adb-dash-frontend-service
+  namespace: adb-dash-ns
+spec:
+  selector:
+    app: adb-dash-frontend
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+  type: ClusterIP # Or LoadBalancer/NodePort if exposing directly
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: adb-dash-frontend-deployment
+  namespace: adb-dash-ns
+  labels:
+    app: adb-dash-frontend
+spec:
+  replicas: 1 # Adjust as needed
+  selector:
+    matchLabels:
+      app: adb-dash-frontend
+  template:
+    metadata:
+      labels:
+        app: adb-dash-frontend
+    spec:
+      containers:
+        - name: frontend
+          image: your-dockerhub-username/adb-dash-frontend:latest # Replace with your actual image path
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+          livenessProbe:
+            httpGet:
+              path: / # Nginx should serve index.html
+              port: 80
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"
+
+# --- Example Redis Deployment (StatefulSet is often preferred for databases/caches) ---
+# This is a simple deployment; for production, consider a Helm chart or operator for Redis.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: adb-dash-redis-service
+  namespace: adb-dash-ns
+spec:
+  selector:
+    app: adb-dash-redis
+  ports:
+    - protocol: TCP
+      port: 6379
+      targetPort: 6379
+  type: ClusterIP
+
+---
+apiVersion: apps/v1
+kind: Deployment # Or StatefulSet for better persistence guarantees
+metadata:
+  name: adb-dash-redis-deployment
+  namespace: adb-dash-ns
+  labels:
+    app: adb-dash-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: adb-dash-redis
+  template:
+    metadata:
+      labels:
+        app: adb-dash-redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          args:
+            - "--requirepass"
+            - "$(REDIS_PASSWORD)" # Get password from Secret
+          ports:
+            - containerPort: 6379
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: adb-dash-secrets
+                  key: REDIS_PASSWORD
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+          livenessProbe:
+            tcpSocket:
+              port: 6379
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            exec: # Redis PING command
+              command: ["redis-cli", "-a", "$(REDIS_PASSWORD)", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+      volumes:
+        - name: redis-data
+          emptyDir: {} # For simple persistence; use PersistentVolumeClaim for production
+
+# Note: Prometheus and Ingress are typically deployed separately (e.g., via Helm charts or as cluster-wide services)
+# and would be configured to discover/route to these services.
+# A namespace 'adb-dash-ns' is assumed. Create it with 'kubectl create namespace adb-dash-ns'.
+# Replace 'your-dockerhub-username/...' with your actual image paths.
+# ADB_HOST in ConfigMap needs careful consideration for K8s networking.
+# The backend will also need a /healthz endpoint.
